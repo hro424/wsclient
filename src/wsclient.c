@@ -7,7 +7,11 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#ifdef __MACH__
+#include <CommonCrypto/CommonDigest.h>
+#else
 #include <openssl/sha.h>
+#endif
 
 #define HOSTLEN		64
 #define PATHLEN		128
@@ -282,7 +286,11 @@ ws_connect(const char *url)
 
 	strcpy(buf, key);
 	strcat(buf, WS_KEY_TOKEN);
+#ifdef __MACH__
+	CC_SHA1(buf, strlen(buf), md);
+#else
 	SHA1((unsigned char *)buf, strlen(buf), md);
+#endif
 	base64_encode(md, 20, key, 32);
 
 	r = read(fd, buf, MSGLEN);
