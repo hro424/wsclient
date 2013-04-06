@@ -39,7 +39,7 @@ static const uint8_t WS_OPCODE_PONG = 0x0A;
  *
  * @param url		the URL.
  * @param host		the host part in the URL.
- * @param port		the port part in the URL.
+ * @param port		the port part in the URL. 0 if unspecified.
  * @param path		the remaining part in the URL.
  * @return		0 on success, otherwise -1.
  */
@@ -69,7 +69,7 @@ parse_url(const char *url, char *scheme, size_t schemelen,
 	}
 
 	if (port) {
-		*port = HTTP_DEFAULT_PORT;
+		*port = 0;
 	}
 
 	while (*p != '\0' && hostlen > 0) {
@@ -253,6 +253,10 @@ ws_connect(const char *url)
 
 	if (parse_url(url, NULL, 0, host, HOSTLEN, &port, path, PATHLEN)) {
 		return -1;
+	}
+
+	if (port == 0) {
+		port = HTTP_DEFAULT_PORT;
 	}
 
 	fd = _connect(host, port);
