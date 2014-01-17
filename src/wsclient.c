@@ -9,9 +9,13 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <poll.h>
+#ifdef __MACH__
+#include <CommonCrypto/CommonDigest.h>
+#else
 #include <openssl/err.h>
 #include <openssl/sha.h>
 #include <openssl/x509v3.h>
+#endif
 
 #define SCHEMELEN	8
 #define HOSTLEN		64
@@ -229,7 +233,11 @@ encode_key(const char *in, char *out)
 
 	strcpy(buf, in);
 	strcat(buf, WS_KEY_TOKEN);
+#ifdef __MACH__
+	CC_SHA1(buf, strlen(buf), md);
+#else
 	SHA1((unsigned char *)buf, strlen(buf), md);
+#endif
 	base64_encode(md, 20, out, 32);
 }
 
