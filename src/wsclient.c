@@ -1,5 +1,5 @@
+#include <config.h>
 #include <wsclient.h>
-#include <netdb.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,15 +7,30 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <netdb.h>
+#include <poll.h>
+#include <openssl/err.h>
 #include <openssl/sha.h>
+#include <openssl/x509v3.h>
 
+#define SCHEMELEN	8
 #define HOSTLEN		64
 #define PATHLEN		128
-#define MSGLEN		200
+#define MSGLEN		256
 #define KEYLEN		25
 #define BUFLEN		4096
 
-static const int HTTP_DEFAULT_PORT = 80;
+#ifdef DEBUG
+#define ENTER()		printf("ENTER %s\n", __func__)
+#define EXIT()		printf("EXIT %s\n", __func__)
+#else
+#define ENTER()
+#define EXIT()
+#endif
+
+static const uint16_t HTTP_DEFAULT_PORT = 80;
+static const char * const HTTP_VER1_0 = "HTTP/1.0";
+static const char * const HTTP_VER1_1 = "HTTP/1.1";
 static const char * const HTTP_HEADER_UPGRADE = "Upgrade:";
 static const char * const HTTP_HEADER_CONNECTION = "Connection:";
 static const char * const HTTP_HEADER_WEBSOCKET_ACCEPT =
@@ -29,6 +44,19 @@ static const uint8_t WS_OPCODE_BINARY = 0x02;
 static const uint8_t WS_OPCODE_CLOSE = 0x08;
 static const uint8_t WS_OPCODE_PING = 0x09;
 static const uint8_t WS_OPCODE_PONG = 0x0A;
+
+#ifdef CLIENT_CERT
+static const char * const CACERT_FILE = "etc/cacert.pem";
+static const char * const CLIENT_CERT_FILE = "etc/c1-testclient01.crt.pem";
+static const char * const CLIENT_KEY_FILE = "etc/c1-testclient01.key.pem";
+static char *client_cert_password;
+#else
+static const char * const CACERT_FILE = "etc/cacert_s.pem";
+#endif
+
+static char proxy[HOSTLEN] = {0,};
+static uint16_t proxy_port;
+
 
 /**
  * Parses a given URL.
@@ -47,12 +75,12 @@ parse_url(const char *url, char *scheme, size_t schemelen,
 	const char *p = NULL;
 
 	if (url == NULL || host == NULL) {
-		return -1;
+		return EINVAL;
 	}
 
 	p = strstr(url, "://");
 	if (p == NULL) {
-		return -1;
+		return EINVAL;
 	}
 
 	p += 3;
@@ -193,12 +221,23 @@ generate_key(char *key)
 	base64_encode(a, 16, key, KEYLEN);
 }
 
-static int
-_connect(const char *host, uint16_t port)
+static void
+encode_key(const char *in, char *out)
 {
-	int fd;
-	int err;
-	struct addrinfo *info;
+	char buf[64];
+	unsigned char md[20];
+
+	strcpy(buf, in);
+	strcat(buf, WS_KEY_TOKEN);
+	SHA1((unsigned char *)buf, strlen(buf), md);
+	base64_encode(md, 20, out, 32);
+}
+
+static int
+do_connect(const char *host, uint16_t port)
+{
+	int fd = -1;
+	struct addrinfo *info = NULL;
 	struct addrinfo hints;
 
 	memset(&hints, 0, sizeof(struct addrinfo));
@@ -207,100 +246,402 @@ _connect(const char *host, uint16_t port)
 	hints.ai_flags = 0;
 	hints.ai_protocol = 0;
 
-	err = getaddrinfo(host, NULL, &hints, &info);
-
-	fd = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
-	if (fd < 0) {
-		return -1;
+	if (getaddrinfo(host, NULL, &hints, &info) != 0) {
+		goto exit;
 	}
 
 	((struct sockaddr_in *)info->ai_addr)->sin_port = htons(port);
-	err = connect(fd, info->ai_addr, info->ai_addrlen);
+	fd = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
+	if (fd < 0) {
+		goto exit;
+	}
 
-	freeaddrinfo(info);
-
-	if (err < 0) {
+	if (connect(fd, info->ai_addr, info->ai_addrlen) < 0) {
 		close(fd);
+	}
+
+exit:
+	if (info) {
+		freeaddrinfo(info);
+	}
+	return fd;
+}
+
+static int
+parse_rescode(char *msg)
+{
+	char *t = strtok(msg, " ");
+
+	if (t == NULL) {
 		return -1;
+	}
+
+	if (strncmp(t, HTTP_VER1_0, strlen(HTTP_VER1_0)) != 0 && 
+	    strncmp(t, HTTP_VER1_1, strlen(HTTP_VER1_1)) != 0) {
+		return -1;
+	}
+
+	t = strtok(NULL, " ");
+	if (t == NULL) {
+		return -1;
+	}
+
+	return strtol(t, NULL, 10);
+}
+
+static int
+http_connect(int fd, const char *server, uint16_t port)
+{
+	char buf[MSGLEN];
+	int r = -1;
+
+	sprintf(buf,
+		"CONNECT %s:%u\x0d\x0aHOST: %s\x0d\x0a"
+		"Proxy-Connection: keep-alive\x0d\x0a\x0d\x0a",
+		server, port, server);
+	r = write(fd, buf, strlen(buf));
+	if (r < 0) {
+		return r;
+	}
+
+	memset(buf, 0, MSGLEN);
+	r = read(fd, buf, MSGLEN);
+	if (r > 0) {
+		r = parse_rescode(buf);
+	}
+	return r;
+}
+
+static int
+connect_server(const char *host, uint16_t port, int *code)
+{
+	int fd;
+
+	if (strlen(proxy) > 0) {
+		fd = do_connect(proxy, proxy_port);
+		if (fd > 0) {
+			int res = http_connect(fd, host, port);
+			if (res != 200) {
+				close(fd);
+				fd = -1;
+			}
+			if (code) {
+				*code = res;
+			}
+		}
+	}
+	else {
+		fd = do_connect(host, port);
 	}
 
 	return fd;
 }
 
-/**
- * Establishes a WebSocket connection.  Schemes "http://" and "ws://" are
- * supported.
- *
- * @param url		the websocket url.
- * @return		file descriptor is return if success, otherwise -1.
- */
-int
-ws_connect(const char *url)
+#ifdef CLIENT_CERT
+static int
+passwd_cb(char *buf, int size, int rwflag, void *userdata)
 {
-	int fd, r, upgrade, connection, accept;
+	strcpy(buf, client_cert_password);
+	return strlen(buf);
+}
+#endif
+
+static SSL *
+init_ssl(void)
+{
+	SSL_CTX *ctx;
+
+	SSL_load_error_strings();
+	SSL_library_init();
+
+	ctx = SSL_CTX_new(SSLv23_client_method());
+	SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2);
+	if (!SSL_CTX_load_verify_locations(ctx, CACERT_FILE, NULL))
+		goto err;
+#ifdef CLIENT_CERT
+	SSL_CTX_set_default_passwd_cb(ctx, passwd_cb);
+	if (!SSL_CTX_use_certificate_file(ctx, CLIENT_CERT_FILE,
+					  SSL_FILETYPE_PEM))
+		goto err;
+
+	if (!SSL_CTX_use_PrivateKey_file(ctx, CLIENT_KEY_FILE,
+					 SSL_FILETYPE_PEM))
+		goto err;
+
+	if (!SSL_CTX_check_private_key(ctx))
+		goto err;
+#endif
+	return SSL_new(ctx);
+err:
+	SSL_CTX_free(ctx);
+	return NULL;
+}
+
+static void
+destroy_ssl(SSL *obj)
+{
+	SSL_CTX *ctx = SSL_get_SSL_CTX(obj);
+	SSL_free(obj);
+	SSL_CTX_free(ctx);
+}
+
+static ssize_t
+wsc_read(struct ws *ws, void *buf, size_t len)
+{
+	return read(ws->fd, buf, len);
+}
+
+static ssize_t
+wsc_write(struct ws *ws, const void *buf, size_t len)
+{
+	return write(ws->fd, buf, len);
+}
+
+static void
+wsc_close(struct ws *ws)
+{
+	close(ws->fd);
+}
+
+static ssize_t
+wss_read(struct ws *ws, void *buf, size_t len)
+{
+	return SSL_read(ws->ssl, buf, len);
+}
+
+static ssize_t
+wss_write(struct ws *ws, const void *buf, size_t len)
+{
+	return SSL_write(ws->ssl, buf, len);
+}
+
+static void
+wss_close(struct ws *ws)
+{
+	int fd = SSL_get_fd(ws->ssl);
+
+	SSL_shutdown(ws->ssl);
+	destroy_ssl(ws->ssl);
+
+	ERR_free_strings();
+
+	close(fd);
+}
+
+static struct ws_ops wsc_ops = {
+	.read = wsc_read,
+	.write = wsc_write,
+	.close = wsc_close,
+};
+
+static struct ws_ops wss_ops = {
+	.read = wss_read,
+	.write = wss_write,
+	.close = wss_close,
+};
+
+
+static int
+verify(SSL *ssl)
+{
+	int rc;
+
+	rc = SSL_get_verify_result(ssl);
+	if (rc != X509_V_OK) {
+		printf("warning: verification faled: %d\n", rc);
+#ifdef SSL_WORKAROUND
+		// Verification always fails because a local issuer is
+		// not defined.
+		return -1;
+#endif
+	}
+	return 0;
+}
+
+static struct ws *
+ws_prepare(const char *scheme, const char *host, uint16_t port)
+{
+	int fd;
+	struct ws *ws;
+	SSL *ssl_obj;
+
+	ENTER();
+	fd = connect_server(host, port, NULL);
+	if (fd < 0)
+		return NULL;
+
+	ws = malloc(sizeof(struct ws));
+	if (ws == NULL) {
+		return NULL;
+	}
+
+	ws->fd = fd;
+
+	if (strncmp(scheme, "https", strlen("https")) == 0 ||
+	    strncmp(scheme, "wss", strlen("wss")) == 0) {
+		ssl_obj = init_ssl();
+		if (ssl_obj == NULL) {
+			ERR_print_errors_fp(stderr);
+			goto err;
+		}
+
+		if (SSL_set_fd(ssl_obj, fd) != 1)
+			goto ssl_err;
+
+		if (SSL_connect(ssl_obj) != 1)
+			goto ssl_err;
+
+		verify(ssl_obj);
+
+		ws->ssl = ssl_obj;
+		ws->ops = &wss_ops;
+	}
+	else {
+		ws->ssl = NULL;
+		ws->ops = &wsc_ops;
+	}
+
+	EXIT();
+	return ws;
+ssl_err:
+	destroy_ssl(ssl_obj);
+
+err:
+	if (ws) {
+		free(ws);
+	}
+	close(fd);
+	return NULL;
+}
+
+static ssize_t
+ws_raw_write(struct ws *ws, void *buf, size_t len)
+{
+	return ws->ops->write(ws, buf, len);
+}
+
+static ssize_t
+ws_raw_read(struct ws *ws, void *buf, size_t len)
+{
+	return ws->ops->read(ws, buf, len);
+}
+
+/*
+static ssize_t
+receive(struct ws *ws, void *buf, size_t len)
+{
+	struct pollfd fds[1] = {{ws->fd, POLLIN, 0}};
+	int r;
+	ssize_t s = 0;
+
+	while (1) {
+		r = poll(fds, 1, 0);
+		if (r > 0) {
+			s = ws_raw_read(ws, buf, len);
+			if (s > 0) {
+				break;
+			}
+		}
+	}
+	return s;
+}
+*/
+
+static int
+request_upgrade(struct ws *ws, const char *host, uint16_t port,
+		const char *path, const char *key)
+{
 	char buf[MSGLEN];
-	char host[HOSTLEN];
-	uint16_t port = 0;
-	char path[PATHLEN];
+	ssize_t r;
+	int n;
 
+	n = sprintf(buf, "GET %s HTTP/1.1\x0d\x0a", path);
+	r = ws_raw_write(ws, buf, n);
+	printf("WS: %s", buf);
+
+	n = sprintf(buf, "Host: %s:%u\x0d\x0a", host, port);
+	r = ws_raw_write(ws, buf, n);
+	printf("WS: %s", buf);
+
+	n = sprintf(buf, "Upgrade: websocket\x0d\x0a");
+	r = ws_raw_write(ws, buf, n);
+	printf("WS: %s", buf);
+
+	n = sprintf(buf, "Connection: Upgrade\x0d\x0a");
+	r = ws_raw_write(ws, buf, n);
+	printf("WS: %s", buf);
+
+	n = sprintf(buf, "Sec-WebSocket-Key: %s\x0d\x0a", key);
+	r = ws_raw_write(ws, buf, n);
+	printf("WS: %s", buf);
+
+	//PCPF
+#ifdef LDC
+	n = sprintf(buf, "Sec-WebSocket-Protocol: ldc\x0d\x0a");
+	r = ws_raw_write(ws, buf, n);
+	printf("WS: %s", buf);
+#endif
+
+	n = sprintf(buf, "Sec-WebSocket-Version: 13\x0d\x0a\x0d\x0a");
+	r = ws_raw_write(ws, buf, n);
+	printf("WS: %s", buf);
+
+	if (r > 0) {
+		return 0;
+	}
+	else {
+		return -1;
+	}
+}
+
+void
+ws_set_proxy(const char *host, uint16_t port)
+{
+	memcpy(proxy, host, strlen(host));
+	proxy_port = port;
+}
+
+void
+ws_set_passwd(const char *str)
+{
+#ifdef CLIENT_CERT
+	if (str) {
+		client_cert_password = malloc(strlen(str) + 1);
+		if (client_cert_password) {
+			strcpy(client_cert_password, str);
+		}
+		else {
+			fprintf(stderr, "out of memory\n");
+		}
+	}
+#endif
+}
+
+int
+verify_response(struct ws *ws, const char *key)
+{
+	int r, upgrade, connection, accept;
+	char buf[MSGLEN];
 	const char *p, *q;
-	char key[32];
-	unsigned char md[20];
 
-	if (parse_url(url, NULL, 0, host, HOSTLEN, &port, path, PATHLEN)) {
-		return -1;
-	}
-
-	fd = _connect(host, port);
-	if (fd < 0) {
-		perror("connect");
-		return -1;
-	}
-
-	sprintf(buf, "GET %s HTTP/1.1\r\n", path);
-	r = write(fd, buf, strlen(buf));
-
-	sprintf(buf, "Host: %s:%u\r\n", host, port);
-	r = write(fd, buf, strlen(buf));
-
-	sprintf(buf, "Upgrade: websocket\r\n");
-	r = write(fd, buf, strlen(buf));
-
-	sprintf(buf, "Connection: Upgrade\r\n");
-	r = write(fd, buf, strlen(buf));
-
-	generate_key(key);
-	sprintf(buf, "Sec-WebSocket-Key: %s\r\n", key);
-	r = write(fd, buf, strlen(buf));
-
-	sprintf(buf, "Sec-WebSocket-Version: 13\r\n\r\n");
-	r = write(fd, buf, strlen(buf));
-	if (r != strlen(buf)) {
-		close(fd);
-		return -1;
-	}
-
-	strcpy(buf, key);
-	strcat(buf, WS_KEY_TOKEN);
-	SHA1((unsigned char *)buf, strlen(buf), md);
-	base64_encode(md, 20, key, 32);
-
-	r = read(fd, buf, MSGLEN);
-	if (r < 0) {
-		close(fd);
-		return -1;
-	}
+	do {
+		r = ws_raw_read(ws, buf, strlen(RESPONSE_LINE_WS));
+	} while (r < 0);
 
 	if (strncmp(buf, RESPONSE_LINE_WS, strlen(RESPONSE_LINE_WS)) != 0) {
-		close(fd);
-		return -1;
+		fprintf(stderr, "not equal '%s' '%s'\n", RESPONSE_LINE_WS, buf);
+		goto err;
 	}
 
+	// XXX: buf[MSGLEN] may not be sufficient to capture the response.
+	memset(buf, 0, MSGLEN);
+	r = ws_raw_read(ws, buf, MSGLEN - 1);
+
 	upgrade = connection = accept = 0;
-	p = buf + strlen(RESPONSE_LINE_WS);
+	p = buf;
 	while (1) {
-		q = strstr(p, "\r\n");
-		if (p == q) {
+		q = strstr(p, "\x0d\x0a");
+		if (p == q || q == NULL) {
 			break;
 		}
 		else if (strncmp(p, HTTP_HEADER_UPGRADE,
@@ -336,15 +677,63 @@ ws_connect(const char *url)
 	}
 
 	if (r == MSGLEN) {	// FIXME
-		while (read(fd, buf, MSGLEN) != 0) ;
+		while (ws_raw_read(ws, buf, MSGLEN) != 0) ;
 	}
 
 	if (!(upgrade && connection && accept)) {
-		close(fd);
-		return -1;
+		fprintf(stderr, "%s %s %s\n", upgrade ? "upgrade" : "",
+			connection ? "connection" : "",
+			accept ? "accept" : "");
+		goto err;
 	}
 
-	return fd;
+	return 0;
+err:
+	return -1;
+}
+
+/**
+ * Establishes a WebSocket connection.  Schemes "http://", "ws://",
+ * "https://" and "wss://" are supported.
+ *
+ * @param url		the websocket url.
+ * @return		file descriptor is return if success, otherwise -1.
+ */
+struct ws *
+ws_connect(const char *url)
+{
+	struct ws *ws;
+	char key[32];
+	char scheme[SCHEMELEN];
+	char host[HOSTLEN];
+	char path[PATHLEN];
+	uint16_t port;
+
+	if (parse_url(url, scheme, SCHEMELEN, host, HOSTLEN, 
+		      &port, path, PATHLEN))
+		return NULL;
+
+	ws = ws_prepare(scheme, host, port);
+	if (ws == NULL) {
+		return NULL;
+	}
+
+	generate_key(key);
+	if (request_upgrade(ws, host, port, path, key)) {
+		fprintf(stderr, "upgrade failed.\n");
+		goto err;
+	}
+
+	encode_key(key, key);
+	if (verify_response(ws, key)) {
+		fprintf(stderr, "response verification failed.\n");
+		goto err;
+	}
+
+	return ws;
+err:
+	ws_close(ws);
+	return NULL;
 }
 
 static inline void
@@ -421,8 +810,8 @@ get_length(unsigned char *frame)
  * @param buf		the data to be sent
  * @param len		the length of the data in bytes
  */
-int
-ws_send(int fd, const void *buf, size_t len)
+ssize_t
+ws_send(struct ws *ws, const void *buf, size_t len)
 {
 	uint32_t mask;
 	uint8_t b[BUFLEN];
@@ -435,14 +824,14 @@ ws_send(int fd, const void *buf, size_t len)
 	i = set_length(b, len);
 	mask = (uint32_t)random();
 	i = set_mask(b, i, htonl(mask));
-	r = write(fd, b, i);
+	r = ws_raw_write(ws, b, i);
 
 	while (len > BUFLEN) {
 		memcpy(b, buf, BUFLEN);
 		for (p = (uint32_t *)b; p < (uint32_t *)(b + BUFLEN); p++) {
 			*p ^= mask;
 		}
-		r += write(fd, b, BUFLEN);
+		r += ws_raw_write(ws, b, BUFLEN);
 		len -= BUFLEN;
 	}
 
@@ -450,10 +839,11 @@ ws_send(int fd, const void *buf, size_t len)
 	for (p = (uint32_t *)b; p < (uint32_t *)(b + len); p++) {
 		*p ^= mask;
 	}
-	r += write(fd, b, len);
+	r += ws_raw_write(ws, b, len);
 
 	return r;
 }
+
 
 /**
  * Receives data through WebSocket.
@@ -462,21 +852,21 @@ ws_send(int fd, const void *buf, size_t len)
  * @param buf		the reception window
  * @param len		the length of the buffer in bytes
  */
-int
-ws_recv(int fd, void *buf, size_t len)
+ssize_t
+ws_recv(struct ws *ws, void *buf, size_t len)
 {
 	uint8_t b[4];
 	int l, r;
 
 	// Read header
-	r = read(fd, b, 2);
+	r = ws_raw_read(ws, b, 2);
 	if (r < 0) {
 		return -1;
 	}
 
 	l = b[1] & 0x7F;
 	if (l == 126) {
-		r = read(fd, b + 2, 2);
+		r = ws_raw_read(ws, b + 2, 2);
 		if (r < 0) {
 			return -1;
 		}
@@ -489,7 +879,7 @@ ws_recv(int fd, void *buf, size_t len)
 
 	l = l > len ? len : l;
 
-	r = read(fd, buf, l);
+	r = ws_raw_read(ws, buf, l);
 
 	return r;
 }
@@ -500,19 +890,20 @@ ws_recv(int fd, void *buf, size_t len)
  * @param fd	the file descriptor
  */
 void
-ws_close(int fd)
+ws_close(struct ws *ws)
 {
 	uint8_t b[2] = {0, 0};
 	int r;
 
 	set_fin(b);
 	set_opcode(b, WS_OPCODE_CLOSE); 
-	r = write(fd, b, 2);
+	r = ws_raw_write(ws, b, 2);
 	if (r < 0) {
-		close(fd);
+		ws->ops->close(ws);
 	}
 	else {
-		close(fd);
+		ws->ops->close(ws);
 	}
+	free(ws);
 }
 
