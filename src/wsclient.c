@@ -303,6 +303,10 @@ http_connect(int fd, const char *server, uint16_t port)
 	char buf[MSGLEN];
 	int r = -1;
 
+	if (port == 0) {
+		port = HTTP_DEFAULT_PORT;
+	}
+
 	sprintf(buf,
 		"CONNECT %s:%u\x0d\x0aHOST: %s\x0d\x0a"
 		"Proxy-Connection: keep-alive\x0d\x0a\x0d\x0a",
