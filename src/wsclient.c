@@ -67,7 +67,7 @@ static uint16_t proxy_port;
  *
  * @param url		the URL.
  * @param host		the host part in the URL.
- * @param port		the port part in the URL.
+ * @param port		the port part in the URL. 0 if unspecified.
  * @param path		the remaining part in the URL.
  * @return		0 on success, otherwise -1.
  */
@@ -97,7 +97,7 @@ parse_url(const char *url, char *scheme, size_t schemelen,
 	}
 
 	if (port) {
-		*port = HTTP_DEFAULT_PORT;
+		*port = 0;
 	}
 
 	while (*p != '\0' && hostlen > 0) {
