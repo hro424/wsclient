@@ -49,8 +49,7 @@ main(int argc, char *argv[])
 
 	printf("server: %s\n", argv[optind]);
 	ws_set_passwd("");
-	printf("%s:%d\n", __func__, __LINE__);
-	ws = ws_connect(argv[optind]);
+	ws = ws_connect(argv[optind], "ldc");
 	if (ws) {
 		printf("Connected.\n");
 		ws_close(ws);

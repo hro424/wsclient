@@ -711,7 +711,7 @@ err:
  * @return		file descriptor is return if success, otherwise -1.
  */
 struct ws *
-ws_connect(const char *url)
+ws_connect(const char *url, const char *proto)
 {
 	struct ws *ws;
 	char key[32];
@@ -719,11 +719,6 @@ ws_connect(const char *url)
 	char host[HOSTLEN];
 	char path[PATHLEN];
 	uint16_t port;
-#ifdef LDC
-	const char *proto = "ldc";
-#else
-	const char *proto = NULL;
-#endif
 
 	if (parse_url(url, scheme, SCHEMELEN, host, HOSTLEN, 
 		      &port, path, PATHLEN))
