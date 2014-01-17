@@ -27,13 +27,8 @@ AC_TYPE_SSIZE_T
 AC_C_INLINE
 
 # Checks for library functions.
-AC_FUNC_MALLOC
+dnl AC_FUNC_MALLOC
 AC_CHECK_FUNCS([memset socket strchr strncasecmp strstr strtol])
-
-AC_ARG_ENABLE([ldc], AS_HELP_STRING([--enable-ldc], [LDC protocol support]))
-AS_IF([test "x$enable_ldc" = "xyes"],
-      [AC_DEFINE([LDC], [1], [LDC protocol support])]
-      )
 
 AC_ARG_ENABLE([client-cert],
 	      AS_HELP_STRING([--enable-client-cert],
@@ -44,5 +39,5 @@ AS_IF([test "x$enable_client_cert" = "xyes"],
 
 AC_CONFIG_FILES([Makefile
                  src/Makefile
-                 tests/Makefile])
+                 ])
 AC_OUTPUT
