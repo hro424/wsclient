@@ -561,7 +561,7 @@ receive(struct ws *ws, void *buf, size_t len)
 
 static int
 request_upgrade(struct ws *ws, const char *host, uint16_t port,
-		const char *path, const char *key)
+		const char *path, const char *key, const char *proto)
 {
 	char buf[MSGLEN];
 	ssize_t r;
@@ -587,12 +587,11 @@ request_upgrade(struct ws *ws, const char *host, uint16_t port,
 	r = ws_raw_write(ws, buf, n);
 	printf("WS: %s", buf);
 
-	//PCPF
-#ifdef LDC
-	n = sprintf(buf, "Sec-WebSocket-Protocol: ldc\x0d\x0a");
-	r = ws_raw_write(ws, buf, n);
-	printf("WS: %s", buf);
-#endif
+	if (proto) {
+		n = sprintf(buf, "Sec-WebSocket-Protocol: %s\x0d\x0a", proto);
+		r = ws_raw_write(ws, buf, n);
+		printf("WS: %s", buf);
+	}
 
 	n = sprintf(buf, "Sec-WebSocket-Version: 13\x0d\x0a\x0d\x0a");
 	r = ws_raw_write(ws, buf, n);
@@ -720,6 +719,11 @@ ws_connect(const char *url)
 	char host[HOSTLEN];
 	char path[PATHLEN];
 	uint16_t port;
+#ifdef LDC
+	const char *proto = "ldc";
+#else
+	const char *proto = NULL;
+#endif
 
 	if (parse_url(url, scheme, SCHEMELEN, host, HOSTLEN, 
 		      &port, path, PATHLEN))
@@ -731,7 +735,7 @@ ws_connect(const char *url)
 	}
 
 	generate_key(key);
-	if (request_upgrade(ws, host, port, path, key)) {
+	if (request_upgrade(ws, host, port, path, key, proto)) {
 		fprintf(stderr, "upgrade failed.\n");
 		goto err;
 	}
