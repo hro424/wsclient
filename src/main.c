@@ -4,6 +4,15 @@
 #include <unistd.h>
 #include "wsclient.h"
 
+#ifdef CLIENT_CERT
+static const char * const CA_CERT_FILE = "etc/cacert.pem";
+static const char * const CLIENT_CERT_FILE = "etc/c1-testclient01.crt.pem";
+static const char * const CLIENT_KEY_FILE = "etc/c1-testclient01.key.pem";
+static const char * const CLIENT_PASSWD = "";
+#else
+static const char * const CA_CERT_FILE = "etc/cacert_s.pem";
+#endif
+
 static void
 print_usage(void)
 {
@@ -51,11 +60,16 @@ main(int argc, char *argv[])
 		return EXIT_FAILURE;
 	}
 
-	ws_set_passwd("");
+	ws_set_ca_cert(CA_CERT_FILE);
+#ifdef CLIENT_CERT
+	ws_set_client_cert(CLIENT_CERT_FILE, CLIENT_KEY_FILE, CLIENT_PASSWD);
+#endif
 	ws = ws_connect(argv[optind], proto);
 	if (ws) {
 		printf("Connected.\n");
 		ws_close(ws);
+		ws_unset_client_cert();
+		ws_unset_ca_cert();
 	}
 	else {
 		printf("Failed to connect.\n");

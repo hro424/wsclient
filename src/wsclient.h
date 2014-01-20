@@ -18,7 +18,10 @@ struct ws_ops {
 };
 
 void ws_set_proxy(const char *host, uint16_t port);
-void ws_set_passwd(const char *str);
+void ws_set_ca_cert(const char *cert);
+void ws_unset_ca_cert(void);
+void ws_set_client_cert(const char *cert, const char *key, const char *passwd);
+void ws_unset_client_cert(void);
 struct ws *ws_connect(const char *url, const char *proto);
 ssize_t ws_send(struct ws *ws, const void *buf, size_t len);
 ssize_t ws_recv(struct ws *ws, void *buf, size_t len);
