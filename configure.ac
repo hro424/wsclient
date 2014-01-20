@@ -7,9 +7,9 @@ AC_CONFIG_HEADERS([config.h])
 
 # Checks for programs.
 AC_PROG_CC
-AC_PROG_RANLIB
 AM_PROG_CC_C_O
 AM_PROG_AR
+LT_INIT
 
 # Checks for libraries.
 AC_CHECK_LIB([crypto], [SHA1])
