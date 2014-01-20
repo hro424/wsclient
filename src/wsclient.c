@@ -49,14 +49,10 @@ static const uint8_t WS_OPCODE_CLOSE = 0x08;
 static const uint8_t WS_OPCODE_PING = 0x09;
 static const uint8_t WS_OPCODE_PONG = 0x0A;
 
-#ifdef CLIENT_CERT
-static const char * const CACERT_FILE = "etc/cacert.pem";
-static const char * const CLIENT_CERT_FILE = "etc/c1-testclient01.crt.pem";
-static const char * const CLIENT_KEY_FILE = "etc/c1-testclient01.key.pem";
-static char *client_cert_password;
-#else
-static const char * const CACERT_FILE = "etc/cacert_s.pem";
-#endif
+static char *ca_cert_file = NULL;
+static char *client_cert_file = NULL;
+static char *client_key_file = NULL;
+static char *client_cert_password = NULL;
 
 static char proxy[HOSTLEN] = {0,};
 static uint16_t proxy_port;
@@ -368,15 +364,15 @@ init_ssl(void)
 
 	ctx = SSL_CTX_new(SSLv23_client_method());
 	SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2);
-	if (!SSL_CTX_load_verify_locations(ctx, CACERT_FILE, NULL))
+	if (!SSL_CTX_load_verify_locations(ctx, ca_cert_file, NULL))
 		goto err;
 #ifdef CLIENT_CERT
 	SSL_CTX_set_default_passwd_cb(ctx, passwd_cb);
-	if (!SSL_CTX_use_certificate_file(ctx, CLIENT_CERT_FILE,
+	if (!SSL_CTX_use_certificate_file(ctx, client_cert_file,
 					  SSL_FILETYPE_PEM))
 		goto err;
 
-	if (!SSL_CTX_use_PrivateKey_file(ctx, CLIENT_KEY_FILE,
+	if (!SSL_CTX_use_PrivateKey_file(ctx, client_key_file,
 					 SSL_FILETYPE_PEM))
 		goto err;
 
@@ -605,6 +601,15 @@ request_upgrade(struct ws *ws, const char *host, uint16_t port,
 	}
 }
 
+static void
+free_string(char **str)
+{
+	if (str) {
+		free(*str);
+		*str = NULL;
+	}
+}
+
 void
 ws_set_proxy(const char *host, uint16_t port)
 {
@@ -613,19 +618,33 @@ ws_set_proxy(const char *host, uint16_t port)
 }
 
 void
-ws_set_passwd(const char *str)
+ws_set_ca_cert(const char *cert)
 {
-#ifdef CLIENT_CERT
-	if (str) {
-		client_cert_password = malloc(strlen(str) + 1);
-		if (client_cert_password) {
-			strcpy(client_cert_password, str);
-		}
-		else {
-			fprintf(stderr, "out of memory\n");
-		}
-	}
-#endif
+	ws_unset_ca_cert();
+	ca_cert_file = strdup(cert);
+}
+
+void
+ws_unset_ca_cert(void)
+{
+	free_string(&ca_cert_file);
+}
+
+void
+ws_set_client_cert(const char *cert, const char *key, const char *passwd)
+{
+	ws_unset_client_cert();
+	client_cert_file = strdup(cert);
+	client_key_file = strdup(key);
+	client_cert_password = strdup(passwd);
+}
+
+void
+ws_unset_client_cert(void)
+{
+	free_string(&client_cert_file);
+	free_string(&client_key_file);
+	free_string(&client_cert_password);
 }
 
 int
