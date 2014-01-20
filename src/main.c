@@ -7,7 +7,7 @@
 static void
 print_usage(void)
 {
-	fprintf(stderr, "usage: wsclient [-p proxy:port] <server_url>\n");
+	fprintf(stderr, "usage: wsclient [-p proto] [-s proxy:port] <server_url>\n");
 }
 
 static void
@@ -30,10 +30,14 @@ main(int argc, char *argv[])
 {
 	struct ws *ws;
 	int c;
+	const char *proto = NULL;
 
-	while ((c = getopt(argc, argv, "p:")) != -1) {
+	while ((c = getopt(argc, argv, "p:s:")) != -1) {
 		switch (c) {
 		case 'p':
+			proto = optarg;
+			break;
+		case 's':
 			set_proxy(optarg);
 			break;
 		default:
@@ -47,9 +51,8 @@ main(int argc, char *argv[])
 		return EXIT_FAILURE;
 	}
 
-	printf("server: %s\n", argv[optind]);
 	ws_set_passwd("");
-	ws = ws_connect(argv[optind], "ldc");
+	ws = ws_connect(argv[optind], proto);
 	if (ws) {
 		printf("Connected.\n");
 		ws_close(ws);
