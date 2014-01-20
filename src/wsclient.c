@@ -743,6 +743,10 @@ ws_connect(const char *url, const char *proto)
 		      &port, path, PATHLEN))
 		return NULL;
 
+	if (port == 0) {
+		port = HTTP_DEFAULT_PORT;
+	}
+
 	ws = ws_prepare(scheme, host, port);
 	if (ws == NULL) {
 		return NULL;
