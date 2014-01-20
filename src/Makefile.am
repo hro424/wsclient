@@ -1,8 +1,8 @@
-lib_LIBRARIES = libws.a
-libws_a_SOURCES = wsclient.c
-libws_a_CFLAGS = -Wall -Werror
+AM_CFLAGS = -Wall -Werror --std=gnu99
+
+lib_LTLIBRARIES = libws.la
+libws_la_SOURCES = wsclient.c
 
 bin_PROGRAMS = wsclient
 wsclient_SOURCES = main.c
-wsclient_CFLAGS = -Wall -Werror
-wsclient_LDADD = libws.a -lssl -lcrypto
+wsclient_LDADD = libws.la -lssl -lcrypto
