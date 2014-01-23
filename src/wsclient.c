@@ -659,7 +659,12 @@ verify_response(struct ws *ws, const char *key)
 	} while (r < 0);
 
 	if (strncmp(buf, RESPONSE_LINE_WS, strlen(RESPONSE_LINE_WS)) != 0) {
-		fprintf(stderr, "not equal '%s' '%s'\n", RESPONSE_LINE_WS, buf);
+		fprintf(stderr, "%s", buf);
+		do {
+			memset(buf, 0, MSGLEN);
+			r = ws_raw_read(ws, buf, MSGLEN);
+			fprintf(stderr, "%s", buf);
+		} while (r == MSGLEN);
 		goto err;
 	}
 
